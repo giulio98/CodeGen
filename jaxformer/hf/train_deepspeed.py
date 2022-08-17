@@ -122,10 +122,12 @@ def train(args):
     config = AutoConfig.from_pretrained(args.model)
     config.gradient_checkpointing = True
     config.use_cache = False
-
+    pad = 50256
     model = AutoModelForCausalLM.from_pretrained(args.model, config=config)
-    tokenizer = AutoTokenizer.from_pretrained("Salesforce/codegen-2B-mono")
-
+    tokenizer = AutoTokenizer.from_pretrained(args.model)
+    tokenizer.padding_side = 'left'
+    tokenizer.pad_token = pad
+    
     model.train()
     # TODO(enijkamp): we need to set this flag twice?
     model.gradient_checkpointing_enable()
