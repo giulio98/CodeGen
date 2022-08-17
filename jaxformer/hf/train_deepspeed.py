@@ -25,8 +25,13 @@ from time import time
 import numpy as np
 
 import torch
+from datasets import load_dataset
 
-from transformers import AutoConfig, AutoModelForCausalLM
+from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
+
+import torch
+from torch.utils.data import Dataset, DataLoader, random_split, RandomSampler, SequentialSampler
+torch.manual_seed(42)
 
 import deepspeed
 
@@ -63,11 +68,32 @@ DEEPSPEED_CONFIG = \
 }
 
 
+class CodeGenDataset(Dataset):
+
+    def __init__(self, txt_list, tokenizer, gpt2_type="gpt2", max_length=768):
+        self.tokenizer = tokenizer
+        self.input_ids = []
+        self.attn_masks = []
+
+        for txt in txt_list:
+            encodings_dict = tokenizer('<|startoftext|>' + txt + '<|endoftext|>', truncation=True,
+                                       max_length=max_length, padding="max_length")
+
+            self.input_ids.append(torch.tensor(encodings_dict['input_ids']))
+            self.attn_masks.append(torch.tensor(encodings_dict['attention_mask']))
+
+    def __len__(self):
+        return len(self.input_ids)
+
+    def __getitem__(self, idx):
+        return self.input_ids[idx], self.attn_masks[idx]
+
+
 def create_args(args=argparse.Namespace()):
 
     args.seed = 42
 
-    args.model = 'Salesforce/codegen-16B-mono'
+    args.model = 'Salesforce/codegen-2B-mono'
 
     args.deepspeed_config = DEEPSPEED_CONFIG
 
@@ -98,11 +124,36 @@ def train(args):
     config.use_cache = False
 
     model = AutoModelForCausalLM.from_pretrained(args.model, config=config)
+    tokenizer = AutoTokenizer.from_pretrained("Salesforce/codegen-2B-mono")
 
     model.train()
     # TODO(enijkamp): we need to set this flag twice?
     model.gradient_checkpointing_enable()
 
+    #######################
+    ## dataset
+    dataset = load_dataset("giulio98/stripedoc")
+    txt_list = []
+    for example in dataset['train']:
+        txt_list.append(example['text'])
+
+    dataset = CodeGenDataset(txt_list, tokenizer, max_length=768)
+    # Split into training and validation sets
+    train_size = int(1 * len(dataset))
+    val_size = len(dataset) - train_size
+
+    train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
+
+    print('{:>5,} training samples'.format(train_size))
+    print('{:>5,} validation samples'.format(val_size))
+
+    # Create the DataLoaders for our training and validation datasets.
+    # We'll take training samples in random order.
+    train_dataloader = DataLoader(
+        train_dataset,  # The training samples.
+        sampler=RandomSampler(train_dataset),  # Select batches randomly
+        batch_size=args.deepspeed_config['train_micro_batch_size_per_gpu']  # Trains with this batch size.
+    )
 
     #######################
     ## deepspeed
@@ -120,11 +171,15 @@ def train(args):
 
     print('starting training')
 
-    input_ids = torch.randint(low=0, high=10, size=[args.deepspeed_config['train_micro_batch_size_per_gpu'], 1024], dtype=torch.int64).cuda()
+    #input_ids = torch.randint(low=0, high=10, size=[args.deepspeed_config['train_micro_batch_size_per_gpu'], 1024], dtype=torch.int64).cuda()
 
-    for step in range(args.opt_steps_train+1):
+    for step, batch in enumerate(train_dataloader):
 
-        loss = model_engine(input_ids=input_ids, labels=input_ids).loss
+        b_input_ids = batch[0].cuda()
+        b_labels = batch[0].cuda()
+
+
+        loss = model_engine(input_ids=b_input_ids, labels=b_labels).loss
 
         model_engine.backward(loss)
         model_engine.step()
