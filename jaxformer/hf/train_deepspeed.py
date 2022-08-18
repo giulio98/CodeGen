@@ -97,7 +97,7 @@ def create_args(args=argparse.Namespace()):
 
     args.deepspeed_config = DEEPSPEED_CONFIG
 
-    args.opt_steps_train = 1000
+    #args.opt_steps_train = 1000
 
     return args
 
@@ -127,7 +127,7 @@ def train(args):
     tokenizer = AutoTokenizer.from_pretrained(args.model)
     tokenizer.padding_side = 'left'
     tokenizer.pad_token = pad
-    
+
     model.train()
     # TODO(enijkamp): we need to set this flag twice?
     model.gradient_checkpointing_enable()
@@ -187,6 +187,7 @@ def train(args):
         model_engine.step()
 
         print(f'{step} {loss:8.3f}')
+    model_engine.save_checkpoint(args.output_dir)
 
 
 
